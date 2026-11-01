@@ -1,0 +1,53 @@
+apiVersion: policies.kyverno.io/v1
+kind: NamespacedValidatingPolicy
+metadata:
+  name: require-image-digests
+spec:
+  validationActions: [Deny]
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [pods]
+  variables:
+    - name: images
+      expression: >-
+        object.spec.containers.map(c, c.image)
+        + object.spec.?initContainers.orValue([]).map(c, c.image)
+        + object.spec.?ephemeralContainers.orValue([]).map(c, c.image)
+  validations:
+    - expression: "variables.images.all(i, i.matches('@sha256:[a-f0-9]{64}$'))"
+      messageExpression: >-
+        'images must be pinned by digest: ' +
+        variables.images.filter(i, !i.matches('@sha256:[a-f0-9]{64}$')).join(', ')
+---
+# Subresources cannot be listed or watched, so this one is admission-only.
+apiVersion: policies.kyverno.io/v1
+kind: NamespacedValidatingPolicy
+metadata:
+  name: require-image-digests-ephemeral
+spec:
+  validationActions: [Deny]
+  failurePolicy: Fail
+  evaluation:
+    background:
+      enabled: false
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [UPDATE]
+        resources: [pods/ephemeralcontainers]
+  variables:
+    - name: images
+      expression: >-
+        object.spec.containers.map(c, c.image)
+        + object.spec.?initContainers.orValue([]).map(c, c.image)
+        + object.spec.?ephemeralContainers.orValue([]).map(c, c.image)
+  validations:
+    - expression: "variables.images.all(i, i.matches('@sha256:[a-f0-9]{64}$'))"
+      messageExpression: >-
+        'images must be pinned by digest: ' +
+        variables.images.filter(i, !i.matches('@sha256:[a-f0-9]{64}$')).join(', ')

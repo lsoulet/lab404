@@ -1,0 +1,44 @@
+apiVersion: policies.kyverno.io/v1
+kind: ImageValidatingPolicy
+metadata:
+  name: verify-lab404-images
+spec:
+  validationActions: [Deny]
+  failurePolicy: Fail
+  # Signatures are checked when Pods are admitted; ephemeral containers are a
+  # subresource, which background scans cannot list.
+  evaluation:
+    background:
+      enabled: false
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: lab404
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [pods, pods/ephemeralcontainers]
+  matchImageReferences:
+    - glob: "ghcr.io/lsoulet/lab404-web@*"
+    - glob: "ghcr.io/lsoulet/lab404-web:*"
+    - glob: "ghcr.io/lsoulet/lab404-votes@*"
+    - glob: "ghcr.io/lsoulet/lab404-votes:*"
+  validationConfigurations:
+    mutateDigest: false
+    verifyDigest: true
+    required: true
+  attestors:
+    - name: imagesWorkflow
+      cosign:
+        keyless:
+          identities:
+            - subject: https://github.com/lsoulet/lab404/.github/workflows/images.yml@refs/heads/main
+              issuer: https://token.actions.githubusercontent.com
+  validations:
+    - expression: >-
+        [images.?containers.orValue([]),
+         images.?initContainers.orValue([]),
+         images.?ephemeralContainers.orValue([])].all(list,
+          list.all(image, verifyImageSignatures(image, [attestors.imagesWorkflow]) > 0))
+      message: images must be signed by the lsoulet/lab404 images workflow on main

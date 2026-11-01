@@ -8,3 +8,5 @@ resources:
   - valkey.yaml
   - gateway.yaml
   - nginx.yaml
+  - image-digest-policy.yaml
+  - image-signature-policy.yaml
