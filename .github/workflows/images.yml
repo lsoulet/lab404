@@ -6,16 +6,46 @@ on:
     paths:
       - "apps/**"
       - ".github/workflows/images.yml"
+  pull_request:
+    paths:
+      - "apps/**"
+      - ".github/workflows/images.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
-  packages: write
+
+env:
+  HADOLINT_IMAGE: hadolint/hadolint:v2.15.1@sha256:32dac94127fd60b7b7e3fbfc65e1383b9b5e25c9bfd7b8536de7a539fe68a12d
+  TRIVY_IMAGE: aquasec/trivy:0.76.1@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c
+  DOCKLE_IMAGE: goodwithtech/dockle:v0.4.15@sha256:eade932f793742de0aa8755406c7677cd7696f8675b6180926f7eeffa7abe6b9
 
 jobs:
-  build:
-    name: Build ${{ matrix.service }} for ${{ matrix.arch }}
+  lint:
+    name: Lint ${{ matrix.service }} Dockerfile
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [web, votes]
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Run Hadolint
+        run: |
+          docker run --rm -i "${HADOLINT_IMAGE}" hadolint --failure-threshold warning - \
+            < "apps/${{ matrix.service }}/Dockerfile"
+
+  build:
+    name: Build ${{ matrix.service }} for ${{ matrix.target.arch }}
+    needs: lint
+    # Fork pull requests get neither registry secrets nor package write access.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -39,19 +69,31 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: dhi.io
+          username: ${{ secrets.DHI_USERNAME }}
+          password: ${{ secrets.DHI_TOKEN }}
+
       - id: image
         name: Set image name
         env:
           OWNER: ${{ github.repository_owner }}
         run: echo "name=ghcr.io/${OWNER,,}/lab404-${{ matrix.service }}" >> "$GITHUB_OUTPUT"
 
+      # Provenance and SBOM attestations are disabled so the pushed digest is
+      # the platform image manifest that the scan job inspects.
       - id: build
         name: Build and push by digest
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: apps/${{ matrix.service }}
           platforms: ${{ matrix.target.platform }}
-          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          provenance: false
+          sbom: false
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
           outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
 
       - name: Export digest
@@ -68,10 +110,97 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  merge:
-    name: Publish ${{ matrix.service }} index
+  scan:
+    name: Scan ${{ matrix.service }} for ${{ matrix.arch }}
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [web, votes]
+        arch: [amd64, arm64]
+
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: digests-${{ matrix.service }}-${{ matrix.arch }}
+          path: /tmp/digests
+
+      - id: image
+        name: Resolve platform digest
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          digest="$(ls /tmp/digests)"
+          echo "ref=ghcr.io/${OWNER,,}/lab404-${{ matrix.service }}@sha256:${digest}" >> "$GITHUB_OUTPUT"
+          mkdir -p reports
+
+      - name: Generate Trivy report and SBOM
+        env:
+          REF: ${{ steps.image.outputs.ref }}
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          trivy() {
+            docker run --rm -e TRIVY_USERNAME -e TRIVY_PASSWORD \
+              -v "$HOME/.cache/trivy:/root/.cache/trivy" -v "$PWD/reports:/reports" \
+              "${TRIVY_IMAGE}" "$@"
+          }
+          trivy image --image-src remote --format json --output /reports/trivy.json "${REF}"
+          trivy image --image-src remote --format cyclonedx --output /reports/sbom.cdx.json "${REF}"
+
+      - name: Generate Dockle report
+        env:
+          REF: ${{ steps.image.outputs.ref }}
+          DOCKLE_USERNAME: ${{ github.actor }}
+          DOCKLE_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          docker run --rm -e DOCKLE_USERNAME -e DOCKLE_PASSWORD -v "$PWD/reports:/reports" \
+            "${DOCKLE_IMAGE}" --format json --output /reports/dockle.json "${REF}"
+
+      - name: Upload scan reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: reports-${{ matrix.service }}-${{ matrix.arch }}
+          path: reports/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Fail on fixable high or critical vulnerabilities
+        env:
+          REF: ${{ steps.image.outputs.ref }}
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          docker run --rm -e TRIVY_USERNAME -e TRIVY_PASSWORD \
+            -v "$HOME/.cache/trivy:/root/.cache/trivy" \
+            "${TRIVY_IMAGE}" image --image-src remote --severity HIGH,CRITICAL \
+            --ignore-unfixed --exit-code 1 "${REF}"
+
+      # Dockle reads the gunicorn "--access-logfile" flag as a credential key.
+      - name: Fail on Dockle warnings
+        env:
+          REF: ${{ steps.image.outputs.ref }}
+          DOCKLE_USERNAME: ${{ github.actor }}
+          DOCKLE_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          ACCEPT_KEY: ${{ matrix.service == 'web' && '--accept-key=--access-logfile' || '' }}
+        run: |
+          docker run --rm -e DOCKLE_USERNAME -e DOCKLE_PASSWORD \
+            "${DOCKLE_IMAGE}" --exit-code 1 --exit-level warn ${ACCEPT_KEY} "${REF}"
+
+  publish:
+    name: Publish ${{ matrix.service }} index
+    needs: scan
+    # Pull requests are built and scanned by digest but never tagged.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     strategy:
       matrix:
         service: [web, votes]
@@ -101,8 +230,53 @@ jobs:
         working-directory: /tmp/digests
         env:
           IMAGE: ${{ steps.image.outputs.name }}
+          MOVE_LATEST: ${{ github.ref == 'refs/heads/main' }}
         run: |
-          docker buildx imagetools create \
-            --tag "${IMAGE}:latest" \
-            $(printf "${IMAGE}@sha256:%s " *)
-          docker buildx imagetools inspect "${IMAGE}:latest"
+          if docker buildx imagetools inspect "${IMAGE}:sha-${GITHUB_SHA}" >/dev/null 2>&1; then
+            echo "::error::${IMAGE}:sha-${GITHUB_SHA} already exists; commit tags are immutable."
+            exit 1
+          fi
+          tags=(--tag "${IMAGE}:sha-${GITHUB_SHA}")
+          if [ "${MOVE_LATEST}" = "true" ]; then
+            tags+=(--tag "${IMAGE}:latest")
+          fi
+          docker buildx imagetools create "${tags[@]}" $(printf "${IMAGE}@sha256:%s " *)
+
+      - name: Record index
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+        run: |
+          mkdir -p reports
+          docker buildx imagetools inspect "${IMAGE}:sha-${GITHUB_SHA}" | tee reports/index.txt
+
+      - name: Upload index record
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: index-${{ matrix.service }}
+          path: reports/index.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  evidence:
+    name: Upload image evidence
+    needs: publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: reports-*
+          path: evidence
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: index-*
+          path: evidence
+
+      - name: Upload evidence bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image-evidence-${{ github.sha }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 90

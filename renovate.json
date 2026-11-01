@@ -1,0 +1,45 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "docker:pinDigests",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "enabledManagers": [
+    "dockerfile",
+    "github-actions",
+    "gomod",
+    "pip-compile",
+    "mise",
+    "custom.regex"
+  ],
+  "pip-compile": {
+    "managerFilePatterns": [
+      "/^apps/web/requirements\\.txt$/"
+    ]
+  },
+  "packageRules": [
+    {
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchPackageNames": [
+        "dhi.io/**"
+      ],
+      "groupName": "DHI base images"
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Update scanner images pinned in workflow env",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/images\\.yml$/"
+      ],
+      "matchStrings": [
+        "_IMAGE: (?<depName>[a-z0-9./-]+):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "docker"
+    }
+  ]
+}

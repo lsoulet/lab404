@@ -1,0 +1,7 @@
+image: ghcr.io/lsoulet/lab404-votes:latest
+id: sha256:6c2e37a8a8abc5dcac4315b134b41b6158efc9e353e5c42b307a231f0a41c29e
+size_bytes: 1842593656
+size_mb: 1842.6
+user: (unset -> root)
+entrypoint: null
+cmd: ["./votes"]

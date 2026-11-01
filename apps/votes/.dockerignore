@@ -1,2 +1,5 @@
 votes
-
+*_test.go
+mise.toml
+Dockerfile
+.dockerignore

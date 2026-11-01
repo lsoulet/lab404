@@ -1,0 +1,7 @@
+image: ghcr.io/lsoulet/lab404-web:latest
+id: sha256:b84ee75b2b72498e837bed85d99f84fb9455e539688a3e80dec7142bf0033335
+size_bytes: 1662700864
+size_mb: 1662.7
+user: (unset -> root)
+entrypoint: null
+cmd: ["opentelemetry-instrument", "gunicorn", "--bind=0.0.0.0:8080", "--access-logfile=-", "app:app"]
