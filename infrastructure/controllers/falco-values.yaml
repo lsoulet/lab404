@@ -1,0 +1,29 @@
+image:
+  tag: 0.45.1@sha256:69e957f91b3a6beb5c82e2afae33ec3e4479dab2d4421475d288d0cd113cedf6
+
+driver:
+  kind: modern_ebpf
+  modernEbpf:
+    leastPrivileged: true
+
+falcoctl:
+  artifact:
+    install:
+      enabled: false
+    follow:
+      enabled: false
+
+falco:
+  json_output: true
+  stdout_output:
+    enabled: true
+
+tolerations:
+  - effect: NoSchedule
+    key: node-role.kubernetes.io/master
+  - effect: NoSchedule
+    key: node-role.kubernetes.io/control-plane
+  - effect: NoSchedule
+    key: workload
+    operator: Equal
+    value: stateful

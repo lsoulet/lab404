@@ -43,3 +43,11 @@ helmCharts:
     skipHooks: true
     skipTests: true
     valuesFile: sealed-secrets-values.yaml
+  - name: falco
+    repo: https://falcosecurity.github.io/charts
+    version: 9.2.1
+    releaseName: falco
+    namespace: falco
+    skipHooks: true
+    skipTests: true
+    valuesFile: falco-values.yaml
