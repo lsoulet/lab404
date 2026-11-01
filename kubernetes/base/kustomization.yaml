@@ -10,6 +10,7 @@ resources:
   - nginx.yaml
   - image-digest-policy.yaml
   - image-signature-policy.yaml
+  - network-policies.yaml
 configMapGenerator:
   - name: nginx
     files:
